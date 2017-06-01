@@ -1,0 +1,122 @@
+//def jobName = "$TARGET_FOLDER/022_Compile"
+def jobName = "/ZZ_LAB/MAWAIS/Test/022_Compile"
+ def myJob = job(jobName) {
+  description  'A simple test job'
+  logRotator(25, 10, -1, -1)   
+   parameters {
+     stringParam('MAKE_ENVIRONMENT', '', 'make environment to build the SW') 
+     //choiceParam('OPTION', ['option 1 (default)', 'option 2', 'option 3'])
+     stringParam('MASTER_BUILD_NUMBER')
+     stringParam('MASTER_BUILD_TAG')
+     booleanParam('MEMORY_MAP_REPORT')
+     booleanParam('WARNING_REPORT')
+     labelParam('BUILD_TARGET_LABEL') {
+            defaultValue('PT-VM-Slave')
+            //description('Select nodes')
+            //allNodes('allCases', 'IgnoreOfflineNodeEligibility')
+        }
+     //labelParam('BUILD_TARGET_LABEL','PT-VM-Slave')
+     concurrentBuild()
+    throttleConcurrentBuilds {
+        maxPerNode 1
+        maxTotal 5
+    }
+     label 'PT-VM-Slave'
+   }
+   deliveryPipelineConfiguration('Build', 'Compile')
+   
+   
+    wrappers {
+
+        timestamps()
+
+        timeout {
+
+            absolute(300)
+
+           buildName('${BUILD_USER}_GenerateCode_#${MASTER_BUILD_NUMBER}')
+        }
+    }
+      steps {
+batchFile ( '''
+@ECHO ##########  PREAPRE WORKSPACE  ########################################################################
+IF EXIST src RD /S /Q src
+IF EXIST out RD /S /Q out
+IF EXIST latest RD /S /Q latest
+IF EXIST tmp RD /S /Q tmp
+IF EXIST SPM RD /S /Q SPM
+
+IF NOT EXIST "in/%BUILD_NUMBER%" EXIT /B 123
+move "in/%BUILD_NUMBER%" src
+
+RD /S /Q in
+
+MD SPM/Script
+
+unzip src/scripts.zip bin/Build/bin/* -d SPM
+unzip src/scripts.zip bin/TargetEnv/bin/* -d SPM
+move src/conf/conf.local SPM
+
+@ECHO ######################### START BUILD and COMPILE ############################################
+SET SrcAddr=%WORKSPACE%/SPM
+SET TMP_FOLDER=%WORKSPACE%/tmp
+cmd /c call %SrcAddr%/bin/Build/bin/Init.bat
+
+IF %ERRORLEVEL% == 0 (
+  MD %WORKSPACE%/latest
+  pushd %WORKSPACE%/out/deliv
+  zip -r9 "%WORKSPACE%/latest/deliv.zip" *.*
+)
+   
+''' )
+ }
+      
+   publishers {
+    fingerprint('out/**/*, latest/**/*')
+    archiveArtifacts {
+       pattern('out/deliv/**/*, out/log/CompileLog.log')
+	
+        }      
+    
+   flexiblePublish {     
+      conditionalAction {
+        condition {
+          booleanCondition('${MEMORY_MAP_REPORT}')
+        }
+        steps{
+        downstreamParameterized {
+          trigger('@@DOWNSTREAM_TRIGGER_JOB@@') {
+            parameters {
+            //sameNode()
+            predefinedProp('MEMORY_MAP_REPORT','${MEMORY_MAP_REPORT}')
+            predefinedProp('MASTER_BUILD_TAG','${MASTER_BUILD_TAG}')
+            predefinedProp('MASTER_BUILD_NUMBER','${MASTER_BUILD_NUMBER}')            
+            }
+         
+            }
+              
+            }
+          }
+        
+        }        
+   
+     extendedEmail {
+            recipientList('$DEFAULT_RECIPIENTS')
+            defaultSubject('$DEFAULT_SUBJECT')
+            defaultContent('$DEFAULT_CONTENT')
+            contentType('text/html')
+            triggers {
+                //beforeBuild()
+                always {
+                    subject('Subject')
+                    content('Body')
+                    sendTo {
+                       requester()
+                        
+                    }
+                }
+            }
+        }
+    }  
+ }
+}
