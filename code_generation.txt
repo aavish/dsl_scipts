@@ -1,0 +1,259 @@
+def jobName = "Pipes/010_GenerateCode"
+def myJob = job(jobName) {
+  description  'A simple test job'
+  logRotator(2, 10, -1, -1)
+   parameters {
+     stringParam('MAKE_ENVIRONMENT', 'I_VED_XX_XX_17F130_cvcmk', 'Choose the make environment') 
+     //choiceParam('OPTION', ['option 1 (default)', 'option 2', 'option 3'])
+     //stringParam('OVERRIDE_branchName', 'Trunk', 'ReleaseSwitch Row Beta or Trunk')
+     fileParam('upload/updatejenkins.zip', 'Upload your local changes in zip format')
+     booleanParam('FAST_BUILD', true)
+     booleanParam('MEMORY_MAP_REPORT')
+     booleanParam('WARNING_REPORT')
+     label 'TBSHARED||MULTI'
+     concurrentBuild()
+    throttleConcurrentBuilds {
+        maxPerNode 1
+        maxTotal 5
+    }
+     environmentVariables {
+        env('OVERRIDE_branchName','Trunk')
+        //properties('OVERRIDE_branchName','Trunk')
+        keepBuildVariables(true)
+    }
+     //buildSelector('ZZ_LAB/MAWAIS/Test/VED4_GEN3_Test/011_checkModels')
+   }
+  deliveryPipelineConfiguration('Init', 'Code_Gen')
+    scm {
+      svn {
+        location("${DEFAULT_SVN_REPO}/Project/$SVN_PROJECT/$SVN_RELEASE_BRANCH") {
+          directory ('SPM') 
+          credentials('SWINT/****** (Powertrain generic build account)')
+          depth(SvnDepth.INFINITY) } 
+                
+        location("${DEFAULT_SVN_REPO}/Tools/ci_bin") {                   
+          directory ('ci_bin')  
+          credentials('SWINT/****** (Powertrain generic build account)')
+          depth(SvnDepth.INFINITY) }
+        checkoutStrategy(SvnCheckoutStrategy.UPDATE_WITH_CLEAN)
+      }
+          
+       }
+           
+   wrappers {
+
+        timestamps()
+
+        timeout {
+
+            absolute(300)
+
+        }
+     deliveryPipelineVersion('${BUILD_NUMBER}', false)
+     buildName('${BUILD_USER}_${BUILD_NUMBER}#')   
+     environmentVariables { 
+       envs([
+              SrcAddr:'${WORKSPACE}/SPM', 
+              TMP_FOLDER:'tmp',
+              ZIP_FILE:'upload/updatejenkins.zip'])
+     }
+   }
+steps {
+batchFile ( '''
+
+@ECHO OFF
+SET MASTER_WORKSPACE=%WORKSPACE%
+SET MASTER_BUILD_TAG=%BUILD_TAG%
+SET MERGE_TARGET_FOLDER=%SrcAddr%
+ci_bin/Merge_Unversioned_Files_SUB.bat
+'''
+           )
+    
+batchFile ( '''
+@ECHO ##########  DEFAULT OVERRIDES  ########################################################################
+ @ECHO ##########  branchName ########################################################################
+
+IF NOT "%OVERRIDE_branchName%"=="DEFAULT" (
+IF NOT "%OVERRIDE_branchName%"=="" (
+@ECHO ### Setting branchName to %OVERRIDE_branchName%
+SET branchName=%OVERRIDE_branchName%
+IF NOT EXIST "out/conf" MD "out/conf"
+ECHO branchName=%OVERRIDE_branchName%>out/conf/DEFAULT_OVERRIDES.txt
+) ELSE (
+@ECHO ### Using default branchName
+)
+)
+@ECHO ######################### START CODE GENERATION ############################################
+cmd /c call %SrcAddr%/bin/GenCode/bin/Init.bat
+'''
+)   
+  
+batchFile ( '''    
+@ECHO #######################################
+@ECHO ################# Exporting SilTest ######################
+
+IF EXIST "%SrcAddr%/SilTest" (
+  svn export --force "%SrcAddr%/SilTest" "%WORKSPACE%/out/SilTest"
+)
+
+IF EXIST "%WORKSPACE%/ci_bin/ProcessCleanUP.bat" (
+  svn export --force "%WORKSPACE%/ci_bin/ProcessCleanUP.bat" "%WORKSPACE%/out/log"
+)
+
+@ECHO ################# Exporting Script ############
+
+IF EXIST "%SrcAddr%/Script" (
+  svn export --force "%SrcAddr%/Script" "%WORKSPACE%/out/Script"
+)
+'''
+          )
+    
+batchFile ( '''
+@ECHO OFF
+
+ECHO #######################################################
+ECHO ################# Package Output ######################
+ECHO #######################################################
+ECHO.
+ECHO ################# SilTest...
+
+IF EXIST "%WORKSPACE%/out/SilTest/SSP_tests" (
+  PUSHD "%WORKSPACE%/out/SilTest/SSP_tests"
+  zip -qr9 ../SSP_tests.zip *.*
+  POPD
+  RD /S /Q "%WORKSPACE%/out/SilTest/SSP_tests"
+)
+
+IF EXIST "%WORKSPACE%/out/SilTest/Unit_tests" (
+  PUSHD "%WORKSPACE%/out/SilTest/Unit_tests"
+  zip -qr9 ../Unit_tests.zip *.*
+  POPD
+  RD /S /Q "%WORKSPACE%/out/SilTest/Unit_tests"
+)
+
+IF EXIST "%WORKSPACE%/out/SilTest/Interface_tests" (
+  PUSHD "%WORKSPACE%/out/SilTest/Interface_tests"
+  zip -qr9 ../Interface_tests.zip *.*
+  POPD
+  RD /S /Q "%WORKSPACE%/out/SilTest/Interface_tests"
+)
+
+ECHO ################# scripts...
+
+IF EXIST "%WORKSPACE%/out/scripts" (
+  PUSHD "%WORKSPACE%/out/scripts"
+  zip -qr9 ../scripts.zip *.*
+  POPD
+  RD /S /Q "%WORKSPACE%/out/scripts"
+)
+
+ECHO ################# Script...
+
+IF EXIST "%WORKSPACE%/out/Script" (
+  PUSHD "%WORKSPACE%/out/Script"
+  zip -qr9 ../Script.zip *.*
+  POPD
+  RD /S /Q "%WORKSPACE%/out/Script"
+)
+'''
+          )
+    
+batchFile ( '''
+ECHO ###########################################
+ECHO ############# CLEANING WORKSPACE "%SrcAddr%"
+
+
+IF "%WARNING_REPORT%"=="true" (
+                  goto :endCheck 
+) ELSE (
+        RD /S /Q "%SrcAddr%"
+)
+
+:endCheck
+'''
+          )
+}
+  
+  publishers {
+    fingerprint('out/*.zip')
+    archiveArtifacts {
+       pattern('out/deliv/**/*,out/opt/Configured_models_${BUILD_TAG}.zip,out/conf/Init*.m,out/opt/code_generated_models.csv,out/log/CodeGen.log')
+	
+        }      
+    flexiblePublish {     
+      conditionalAction {
+        condition {
+          booleanCondition('${WARNING_REPORT}')
+        }
+        steps{
+        downstreamParameterized {
+          trigger('@@DOWNSTREAM_TRIGGER_JOB2@@') {
+            parameters {
+            sameNode()
+            predefinedProp('MASTER_WORKSPACE','${WORKSPACE}')
+            predefinedProp('MASTER_BUILD_TAG','${BUILD_TAG}')
+            predefinedProp('MASTER_BUILD_NUMBER','${BUILD_NUMBER}')
+            predefinedProp('ProjName','${VED4_GENIII}')
+            predefinedProp('SrcAddr','${SrcAddr}')
+            predefinedProp('branchName','${OVERRIDE_branchName}')
+            
+            }
+         
+            }
+              
+            }
+          }
+        
+        }        
+    conditionalAction {
+    condition {
+      status('SUCCESS', 'SUCCESS')
+    }
+          
+    steps {
+        downstreamParameterized {
+          trigger('@@DOWNSTREAM_TRIGGER_JOB@@') {
+            parameters {
+            sameNode()
+            predefinedProp('MEMORY_MAP_REPORT','${MEMORY_MAP_REPORT}')
+            predefinedProp('MASTER_BUILD_TAG','${BUILD_TAG}')
+            predefinedProp('MASTER_BUILD_NUMBER','${BUILD_NUMBER}')
+            predefinedProp('MAKE_ENVIRONMENT','${MAKE_ENVIRONMENT}')
+            
+            }
+         
+            }
+              
+            }
+          }
+    }
+    }
+    postBuildTask {
+    task('PROCESS CLEANUP', ''' SET BUILD_PID_TOKEN_FILE=%WORKSPACE%/out/log/PID_TOKEN-CodeGen.txt 
+    ci_bin/ProcessCleanUP.bat ''')
+    
+    }
+        extendedEmail {
+            recipientList('$DEFAULT_RECIPIENTS')
+            defaultSubject('$DEFAULT_SUBJECT')
+            defaultContent('$DEFAULT_CONTENT')
+            contentType('text/html')
+            triggers {
+                //beforeBuild()
+                always {
+                    subject('Subject')
+                    content('Body')
+                    sendTo {
+                       requester()
+                        
+                    }
+                }
+            }
+    }
+    
+    
+    
+    
+    }    
+  
+}
